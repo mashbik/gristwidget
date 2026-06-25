@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Создать из шаблона</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<style>
+  :root{
+    --gray:#424242; --grayUp:#4d4d4d; --black:#0A0A0A;
+    --orange:#FF4D00; --lime:#B8FF00; --cream:#F0EDE6; --line:#5e5e5e; --muted:#a8a39a;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--gray);color:var(--cream);
+    font-family:'Onest',system-ui,sans-serif;font-size:14px}
+  .wrap{padding:16px;display:flex;flex-direction:column;gap:14px;height:100%}
+  h1{font-size:15px;margin:0;letter-spacing:.3px}
+  .sub{color:var(--muted);font-size:12px;margin-top:-8px}
+  label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:600;display:block;margin-bottom:6px}
+  select{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);
+    background:var(--grayUp);color:var(--cream);font-size:14px;font-family:inherit}
+  select:focus{outline:2px solid var(--orange)}
+  .preview{background:var(--grayUp);border:1px solid var(--line);border-radius:12px;
+    padding:10px 12px;font-size:12px;color:var(--muted);max-height:120px;overflow:auto}
+  .preview b{color:var(--cream)}
+  button{cursor:pointer;font-family:inherit;border:none}
+  .go{padding:13px;border-radius:100px;background:var(--orange);color:#fff;font-weight:700;font-size:14px;
+    transition:filter .15s, opacity .15s}
+  .go:hover{filter:brightness(1.08)}
+  .go:disabled{opacity:.5;cursor:default}
+  .msg{font-size:12px;padding:10px 12px;border-radius:10px;display:none}
+  .msg.ok{display:block;background:var(--lime);color:var(--black);font-weight:600}
+  .msg.err{display:block;background:var(--orange);color:#fff}
+  .hint{font-size:11px;color:var(--muted);line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>Создать этапы из шаблона</h1>
+    <div class="sub">Скопирует состав шаблона в текущий проект</div>
+  </div>
+
+  <div>
+    <label>Проект</label>
+    <select id="project"></select>
+  </div>
+
+  <div>
+    <label>Шаблон</label>
+    <select id="template"></select>
+  </div>
+
+  <div>
+    <label>Что будет добавлено</label>
+    <div class="preview" id="preview">Выбери шаблон…</div>
+  </div>
+
+  <button class="go" id="go" disabled>Создать этапы →</button>
+  <div class="msg" id="msg"></div>
+
+  <div class="hint">
+    Этапы добавятся в таблицу «Этапы» с привязкой к выбранному проекту.
+    После этого их можно резать под объект — шаблон не меняется.
+    Если у проекта уже есть этапы, новые добавятся к ним (дубли не удаляются).
+  </div>
+</div>
+
+<script>
+// ── Имена таблиц/колонок. Поменяй здесь, если у тебя названо иначе. ───────────
+const T = {
+  templates:   "Шаблоны",          // справочник шаблонов
+  tmplStages:  "Шаблон_этапов",    // строки состава шаблонов
+  stages:      "Этапы",            // этапы проектов (рабочие копии)
+  projects:    "Проекты",
+  // колонки в Шаблон_этапов
+  tmplRef:     "Шаблон",           // ссылка на Шаблоны
+  cEtap:       "Этап",
+  cPodetap:    "Подэтап",
+  cRole:       "Роль",
+  cDays:       "План_дней",
+  cOrder:      "Порядок",
+  // колонка-ссылка на проект в таблице Этапы
+  projRef:     "Проект",
+};
+
+let DATA = { projects: [], templates: [], tmplStages: [] };
+
+const $ = (id) => document.getElementById(id);
+const projectSel = $("project");
+const templateSel = $("template");
+const preview = $("preview");
+const goBtn = $("go");
+const msg = $("msg");
+
+function showMsg(text, kind){ msg.className = "msg " + kind; msg.textContent = text; }
+function clearMsg(){ msg.className = "msg"; msg.textContent = ""; }
+
+// строки выбранного шаблона, отсортированные по порядку
+function rowsForSelectedTemplate(){
+  const tid = Number(templateSel.value);
+  if (!tid) return [];
+  return DATA.tmplStages
+    .filter(r => {
+      const ref = r[T.tmplRef];
+      // ссылка может прийти как ['R', id] или как число — поддержим оба
+      const refId = Array.isArray(ref) ? ref[1] : ref;
+      return refId === tid;
+    })
+    .sort((a,b) => (a[T.cOrder]||0) - (b[T.cOrder]||0));
+}
+
+function refreshPreview(){
+  const rows = rowsForSelectedTemplate();
+  if (!rows.length){ preview.innerHTML = "Выбери шаблон…"; goBtn.disabled = true; return; }
+  const lines = rows.map(r => {
+    const sub = r[T.cPodetap] ? " · " + r[T.cPodetap] : "";
+    const d = r[T.cDays] != null ? ` <b>${r[T.cDays]} дн.</b>` : "";
+    return `${r[T.cEtap]}${sub}${d}`;
+  });
+  preview.innerHTML = `<b>${rows.length} строк:</b><br>` + lines.join("<br>");
+  goBtn.disabled = !(projectSel.value && rows.length);
+}
+
+async function load(){
+  try {
+    const [proj, tmpl, ts] = await Promise.all([
+      grist.docApi.fetchTable(T.projects),
+      grist.docApi.fetchTable(T.templates),
+      grist.docApi.fetchTable(T.tmplStages),
+    ]);
+    DATA.projects   = toRecords(proj);
+    DATA.templates  = toRecords(tmpl);
+    DATA.tmplStages = toRecords(ts);
+
+    fill(projectSel, DATA.projects, (r)=> r.Название || r.Name || ("Проект #"+r.id));
+    fill(templateSel, DATA.templates, (r)=> r.Название || r.Name || ("Шаблон #"+r.id));
+    refreshPreview();
+  } catch(e){
+    showMsg("Не удалось прочитать таблицы: " + e.message + ". Проверь имена в блоке T и доступ виджета (Read Table).", "err");
+  }
+}
+
+// fetchTable отдаёт колоночный формат {id:[...], Колонка:[...]} → превратим в массив записей
+function toRecords(t){
+  const ids = t.id || [];
+  return ids.map((id, i) => {
+    const rec = { id };
+    for (const k in t){ if (k!=="id") rec[k] = t[k][i]; }
+    return rec;
+  });
+}
+
+function fill(sel, records, labelFn){
+  sel.innerHTML = '<option value="">—</option>' +
+    records.map(r => `<option value="${r.id}">${labelFn(r)}</option>`).join("");
+}
+
+async function createStages(){
+  clearMsg();
+  const projectId = Number(projectSel.value);
+  const rows = rowsForSelectedTemplate();
+  if (!projectId || !rows.length) return;
+
+  goBtn.disabled = true;
+  try {
+    // соберём колонки для BulkAddRecord в таблицу Этапы
+    const cols = {
+      [T.projRef]:  rows.map(()=> projectId),
+      [T.cEtap]:    rows.map(r => r[T.cEtap] || ""),
+      [T.cPodetap]: rows.map(r => r[T.cPodetap] || ""),
+      [T.cRole]:    rows.map(r => r[T.cRole] || ""),
+      [T.cDays]:    rows.map(r => r[T.cDays] ?? null),
+      [T.cOrder]:   rows.map(r => r[T.cOrder] ?? null),
+    };
+    const rowIds = rows.map(()=> null);
+    await grist.docApi.applyUserActions([
+      ["BulkAddRecord", T.stages, rowIds, cols]
+    ]);
+    showMsg(`Готово: добавлено ${rows.length} этапов в проект.`, "ok");
+  } catch(e){
+    showMsg("Ошибка записи: " + e.message + ". Нужен доступ виджета на запись (Full access).", "err");
+  } finally {
+    goBtn.disabled = false;
+  }
+}
+
+projectSel.addEventListener("change", refreshPreview);
+templateSel.addEventListener("change", refreshPreview);
+goBtn.addEventListener("click", createStages);
+
+// Запросим у Grist полный доступ (нужен для записи в Этапы)
+grist.ready({ requiredAccess: "full" });
+load();
+</script>
+</body>
+</html>
