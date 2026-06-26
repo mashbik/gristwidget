@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Создать состав проекта</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<style>
+  :root{--gray:#424242;--grayUp:#4d4d4d;--grayHi:#595959;--black:#0A0A0A;
+    --orange:#FF4D00;--lime:#B8FF00;--cream:#F0EDE6;--line:#5e5e5e;--muted:#a8a39a;}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--gray);color:var(--cream);
+    font-family:'Onest',system-ui,sans-serif;font-size:14px}
+  .wrap{padding:16px;display:flex;flex-direction:column;gap:14px}
+  h1{font-size:15px;margin:0;letter-spacing:.3px}
+  .sub{color:var(--muted);font-size:12px;margin-top:-8px}
+  label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:600;display:block;margin-bottom:6px}
+  select{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);
+    background:var(--grayUp);color:var(--cream);font-size:14px;font-family:inherit}
+  select:focus{outline:2px solid var(--orange)}
+  .preview{background:var(--grayUp);border:1px solid var(--line);border-radius:12px;
+    padding:10px 12px;font-size:12px;color:var(--muted);max-height:200px;overflow:auto}
+  .preview b{color:var(--cream)}
+  .prow{padding:3px 0;border-top:1px solid var(--line)}
+  .prow:first-child{border-top:none}
+  button{cursor:pointer;font-family:inherit;border:none}
+  .go{padding:13px;border-radius:100px;background:var(--orange);color:#fff;font-weight:700;font-size:14px;transition:filter .15s,opacity .15s}
+  .go:hover{filter:brightness(1.08)}
+  .go:disabled{opacity:.5;cursor:default}
+  .msg{font-size:12px;padding:10px 12px;border-radius:10px;display:none;white-space:pre-wrap}
+  .msg.ok{display:block;background:var(--lime);color:var(--black);font-weight:600}
+  .msg.err{display:block;background:var(--orange);color:#fff}
+  .hint{font-size:11px;color:var(--muted);line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>Создать состав проекта</h1>
+    <div class="sub">Копирует шаблон выбранного типа в «Состав проектов (факт)»</div>
+  </div>
+  <div><label>Проект</label><select id="project"></select></div>
+  <div><label>Тип шаблона</label><select id="ttype"></select>
+    <div class="sub" id="autohint" style="margin-top:6px"></div></div>
+  <div><label>Что будет добавлено</label>
+    <div class="preview" id="preview">Загрузка…</div></div>
+  <button class="go" id="go" disabled>Создать состав &rarr;</button>
+  <div class="msg" id="msg"></div>
+  <div class="hint">Строки добавятся в «Состав проектов (факт)» с привязкой к проекту.
+    Дальше ГАП режет их под объект. Шаблон не меняется. Повторный запуск добавит ещё раз.</div>
+</div>
+
+<script>
+// ════════════════════════════════════════════════════════════════════════════
+// САМОНАСТРОЙКА. Виджет сам читает человеческие имена таблиц и колонок из
+// служебных таблиц Grist и сопоставляет их. Менять ничего не нужно — даже если
+// переименуешь таблицы/колонки, виджет подстроится. Ниже только «что искать».
+// ════════════════════════════════════════════════════════════════════════════
+const WANT = {
+  // ТОЧНЫЕ имена со скриншотов Vlad.
+  src:  ["Шаблон состава проекта"],
+  dst:  ["Состав проектов (факт)"],
+  proj: ["Список проектов"],
+  srcType: ["Тип проекта"],
+  srcEtap: ["Этап"],
+  srcSub:  ["Подэтап"],
+  srcRole: ["Роль"],
+  srcDays: ["План: дней","План, дней","План дней","План_дней","План"],
+  dstProj: ["Наименование проекта"],
+  dstEtap: ["Этап"],
+  dstSub:  ["Подэтап"],
+  dstRole: ["Роль"],
+  dstDays: ["План: дней","План, дней","План дней","План_дней","План"],
+  projName:["Название проекта"],
+}
+
+const $=(id)=>document.getElementById(id);
+const projectSel=$("project"),typeSel=$("ttype"),preview=$("preview"),
+      goBtn=$("go"),msg=$("msg"),autohint=$("autohint");
+const setMsg=(t,k)=>{msg.className="msg "+k;msg.textContent=t;};
+const clrMsg=()=>{msg.className="msg";msg.textContent="";};
+const norm=(s)=>(s||"").toString().toLowerCase().replace(/[\s_().,:#-]/g,"");
+
+// ── СХЕМА: строим карту человеческое-имя → {tableId, colId, refTable} ─────────
+let SCHEMA = { tables:{}, cols:{} };  // tables: humanNorm->tableId; cols: tableId-> {humanNorm->{colId,type,refTable}}
+
+async function buildSchema(){
+  const T = toRecords(await grist.docApi.fetchTable("_grist_Tables"));     // id(num), tableId(str)
+  const C = toRecords(await grist.docApi.fetchTable("_grist_Tables_column")); // parentId(num table), colId, label, type
+  // map numeric tableRef -> tableId string
+  const numToTableId={}; T.forEach(t=>{ numToTableId[t.id]=t.tableId; });
+  // human table name: Grist хранит «сырой» tableId; человеческое имя берём из rawViewSection? 
+  // Проще: tableId часто = транслит/буквы. Но человеческое имя таблицы = из _grist_Tables.tableId не всегда.
+  // Надёжный человекочитаемый ярлык таблицы лежит в _grist_Tables.tableId как идентификатор,
+  // а отображаемое имя — в первой строке _grist_Views? Чтобы не усложнять — сопоставим по колонкам.
+  SCHEMA.tables={}; SCHEMA.cols={};
+  T.forEach(t=>{ SCHEMA.tables[norm(t.tableId)] = t.tableId; });
+  // колонки: label — человеческий заголовок, colId — внутреннее имя
+  C.forEach(c=>{
+    const tid = numToTableId[c.parentId];
+    if(!tid) return;
+    if(!SCHEMA.cols[tid]) SCHEMA.cols[tid]={};
+    const human = c.label || c.colId;
+    let refTable=null;
+    if(typeof c.type==="string" && c.type.startsWith("Ref:")) refTable=c.type.slice(4);
+    if(typeof c.type==="string" && c.type.startsWith("RefList:")) refTable=c.type.slice(8);
+    SCHEMA.cols[tid][norm(human)] = { colId:c.colId, type:c.type, refTable };
+  });
+  return {T, numToTableId};
+}
+
+// найти tableId по списку человеческих имён — сверяясь и с tableId, и с набором колонок
+function findTable(humanList){
+  for(const h of humanList){ const n=norm(h); if(SCHEMA.tables[n]) return SCHEMA.tables[n]; }
+  // запасной: частичное совпадение по tableId
+  for(const h of humanList){ const n=norm(h);
+    for(const key in SCHEMA.tables){ if(key.includes(n)||n.includes(key)) return SCHEMA.tables[key]; } }
+  return null;
+}
+function findCol(tid, humanList){
+  const cols=SCHEMA.cols[tid]||{};
+  for(const h of humanList){ const c=cols[norm(h)]; if(c) return c; }
+  return null;
+}
+
+// ── данные ───────────────────────────────────────────────────────────────────
+let R = {}; // resolved: tableIds + colIds
+let DATA = { projects:[], src:[], typeNameById:{}, projNameById:{} };
+
+const toRecords=(t)=>{const ids=t.id||[];
+  return ids.map((id,i)=>{const r={id};for(const k in t){if(k!=="id")r[k]=t[k][i];}return r;});};
+const refId=(v)=>Array.isArray(v)?v[1]:v;
+const refList=(v)=>{if(Array.isArray(v)){return v[0]==='L'?v.slice(1):v.filter(x=>typeof x==='number');}return v?[v]:[];};
+
+async function load(){
+  try{
+    await buildSchema();
+    // Опознаём таблицы по характерным колонкам (label), а не по имени таблицы —
+    // так надёжнее, т.к. Grist хранит только внутренние id таблиц.
+    const hasCol=(tid,names)=>names.some(n=>SCHEMA.cols[tid] && SCHEMA.cols[tid][norm(n)]);
+    let srcT=null,dstT=null,projT=null;
+    for(const tid in SCHEMA.cols){
+      const projname = hasCol(tid,["Название проекта"]);
+      const client   = hasCol(tid,["Клиент"]);
+      const naimen   = hasCol(tid,["Наименование проекта"]);
+      const tip      = hasCol(tid,["Тип проекта"]);
+      const podetap  = hasCol(tid,["Подэтап"]);
+      const rolc     = hasCol(tid,["Роль"]);
+      // Проекты: Название проекта + Клиент
+      if(projname && client && !projT) projT=tid;
+      // Приёмник: Наименование проекта (уникально)
+      else if(naimen && !dstT) dstT=tid;
+      // Источник: Тип проекта + Подэтап + Роль, без Наименование/Клиент
+      else if(tip && podetap && rolc && !naimen && !client && !srcT) srcT=tid;
+    }
+    if(!srcT||!dstT||!projT){
+      const list=Object.values(SCHEMA.tables).join(", ");
+      setMsg("Не нашёл таблицы.\nИсточник: "+srcT+"\nПриёмник: "+dstT+"\nПроекты: "+projT+
+             "\nВсе таблицы: "+list+"\nПроверь имена в WANT.","err");
+      return;
+    }
+    R.srcT=srcT; R.dstT=dstT; R.projT=projT;
+    // колонки источника
+    R.cType=findCol(srcT,WANT.srcType); R.cEtap=findCol(srcT,WANT.srcEtap);
+    R.cSub=findCol(srcT,WANT.srcSub);   R.cRole=findCol(srcT,WANT.srcRole);
+    R.cDays=findCol(srcT,WANT.srcDays);
+    // колонки приёмника
+    R.dProj=findCol(dstT,WANT.dstProj); R.dEtap=findCol(dstT,WANT.dstEtap);
+    R.dSub=findCol(dstT,WANT.dstSub);   R.dRole=findCol(dstT,WANT.dstRole);
+    R.dDays=findCol(dstT,WANT.dstDays);
+    // колонка имени проекта
+    R.pName=findCol(projT,WANT.projName);
+
+    const missing=[];
+    if(!R.cType)missing.push("Тип шаблона (источник)");
+    if(!R.dProj)missing.push("Проект (приёмник)");
+    if(missing.length){ setMsg("Не нашёл колонки: "+missing.join(", ")+
+        ".\nЕсть в источнике: "+Object.keys(SCHEMA.cols[srcT]||{}).join(", ")+
+        "\nЕсть в приёмнике: "+Object.keys(SCHEMA.cols[dstT]||{}).join(", "),"err"); return; }
+
+    // тянем данные
+    DATA.projects = toRecords(await grist.docApi.fetchTable(projT));
+    DATA.src      = toRecords(await grist.docApi.fetchTable(srcT));
+
+    // карта названий проектов
+    DATA.projNameById={};
+    DATA.projects.forEach(p=>{ DATA.projNameById[p.id]= R.pName? p[R.pName.colId] : ("Проект #"+p.id); });
+
+    // карта названий типов — из таблицы, на которую ссылается колонка Тип шаблона
+    DATA.typeNameById={};
+    if(R.cType.refTable){
+      const typeRows=toRecords(await grist.docApi.fetchTable(R.cType.refTable));
+      // имя типа — первая текстовая колонка этой таблицы
+      const typeCols=SCHEMA.cols[R.cType.refTable]||{};
+      // ищем колонку с названием: «Тип проекта»/«Название»/первая
+      let nameColId=null;
+      for(const k in typeCols){ if(/тип|назван|name/.test(k)){ nameColId=typeCols[k].colId; break; } }
+      if(!nameColId){ const first=Object.values(typeCols)[0]; nameColId=first&&first.colId; }
+      typeRows.forEach(r=>{ DATA.typeNameById[r.id]= nameColId? r[nameColId] : ("Тип #"+r.id); });
+    }
+
+    fillProjects(); fillTypes(); refresh();
+    clrMsg();
+  }catch(e){ setMsg("Ошибка: "+e.message+"\nПроверь, что доступ виджета = Полный доступ.","err"); }
+}
+
+function fillProjects(){
+  projectSel.innerHTML='<option value="">—</option>'+
+    DATA.projects.map(p=>`<option value="${p.id}">${DATA.projNameById[p.id]||("Проект #"+p.id)}</option>`).join("");
+}
+function uniqueTypes(){
+  const seen=new Map();
+  DATA.src.forEach(r=>{const t=refId(r[R.cType.colId]);if(t!=null&&!seen.has(t))seen.set(t,true);});
+  return [...seen.keys()];
+}
+function fillTypes(){
+  typeSel.innerHTML='<option value="">—</option>'+
+    uniqueTypes().map(t=>{
+      const label=(DATA.typeNameById&&DATA.typeNameById[t])?DATA.typeNameById[t]:("Тип #"+t);
+      return `<option value="${t}">${label}</option>`;
+    }).join("");
+}
+function autoPickTypeFromProject(){
+  const p=DATA.projects.find(x=>x.id===Number(projectSel.value));
+  if(!p){autohint.textContent="";return;}
+  // тип проекта берём из колонки проекта, ссылающейся на ту же таблицу типов
+  let projTypeCol=null; const pcols=SCHEMA.cols[R.projT]||{};
+  for(const k in pcols){ if(pcols[k].refTable===R.cType.refTable){ projTypeCol=pcols[k]; break; } }
+  if(projTypeCol){
+    const t=refId(p[projTypeCol.colId]);
+    if(t!=null){ typeSel.value=String(t); autohint.textContent="Тип подставлен из проекта (можно поменять)."; return; }
+  }
+  autohint.textContent="У проекта не задан тип — выбери вручную.";
+}
+function rowsForType(){
+  const t=Number(typeSel.value);if(!t)return[];
+  return DATA.src.filter(r=>refId(r[R.cType.colId])===t);
+}
+function nameForRef(refTable, id){
+  // для превью этапов — попробуем показать название, иначе #id
+  return "#"+id;
+}
+function refresh(){
+  const rows=rowsForType();
+  if(!rows.length){preview.innerHTML="Выбери проект и тип…";goBtn.disabled=true;return;}
+  preview.innerHTML=`<b>${rows.length} строк:</b>`+rows.map(r=>{
+    const e=refId(r[R.cEtap&&R.cEtap.colId]); const s=refId(r[R.cSub&&R.cSub.colId]);
+    const d=R.cDays?r[R.cDays.colId]:null;
+    const es=(e!=null?("#"+e):"")+(s!=null?(" — #"+s):"");
+    return `<div class="prow">${es}${d!=null?(" · "+d+" дн."):""}</div>`;
+  }).join("");
+  goBtn.disabled=!(projectSel.value&&rows.length);
+}
+async function create(){
+  clrMsg();
+  const pid=Number(projectSel.value),rows=rowsForType();
+  if(!pid||!rows.length)return;
+  goBtn.disabled=true;
+  try{
+    const cols={};
+    cols[R.dProj.colId]=rows.map(()=>pid);
+    if(R.dEtap)cols[R.dEtap.colId]=rows.map(r=>refId(r[R.cEtap.colId])??null);
+    if(R.dSub) cols[R.dSub.colId] =rows.map(r=>refId(r[R.cSub.colId])??null);
+    if(R.dRole)cols[R.dRole.colId]=rows.map(r=>["L",...refList(r[R.cRole.colId])]);
+    if(R.dDays)cols[R.dDays.colId]=rows.map(r=>R.cDays?(r[R.cDays.colId]??null):null);
+    await grist.docApi.applyUserActions([["BulkAddRecord",R.dstT,rows.map(()=>null),cols]]);
+    setMsg(`Готово: добавлено ${rows.length} строк в «Состав проектов (факт)».`,"ok");
+  }catch(e){ setMsg("Ошибка записи: "+e.message,"err"); }
+  finally{ goBtn.disabled=false; }
+}
+projectSel.addEventListener("change",()=>{autoPickTypeFromProject();refresh();});
+typeSel.addEventListener("change",refresh);
+goBtn.addEventListener("click",create);
+grist.ready({requiredAccess:"full"});
+load();
+</script>
+</body>
+</html>
