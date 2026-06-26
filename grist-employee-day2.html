@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Мой день · Onda</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<style>
+  :root{--gray:#424242;--grayUp:#4d4d4d;--grayHi:#5e5e5e;--black:#0A0A0A;
+    --orange:#FF4D00;--lime:#B8FF00;--cream:#F0EDE6;--line:#5e5e5e;--muted:#a8a39a;}
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--gray);color:var(--cream);
+    font-family:'Onest',system-ui,sans-serif;font-size:15px}
+  .wrap{max-width:560px;margin:0 auto;padding:22px 18px 40px;display:flex;flex-direction:column;gap:18px}
+  .head{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+  h1{font-size:20px;margin:0;letter-spacing:.3px;font-weight:800}
+  .who{font-size:13px;color:var(--muted)} .who b{color:var(--cream)}
+  .card{background:var(--grayUp);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;flex-direction:column;gap:14px}
+  label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:700;display:block;margin-bottom:7px}
+  select,input[type=text]{width:100%;padding:12px 13px;border-radius:11px;border:1px solid var(--line);
+    background:var(--gray);color:var(--cream);font-size:15px;font-family:inherit}
+  select:focus,input:focus{outline:2px solid var(--orange)} select:disabled{opacity:.45}
+  .days{display:flex;gap:8px}
+  .day{flex:1;padding:12px 0;border-radius:11px;border:1px solid var(--line);background:var(--gray);text-align:center;cursor:pointer;font-weight:700;transition:.12s}
+  .day.sel{background:var(--lime);color:var(--black);border-color:var(--lime)}
+  .dates{display:flex;gap:8px}
+  .dt{flex:1;padding:11px 0;border-radius:11px;border:1px solid var(--line);background:var(--gray);text-align:center;cursor:pointer;font-weight:600;font-size:14px}
+  .dt.sel{background:var(--cream);color:var(--black);border-color:var(--cream)}
+  button{cursor:pointer;font-family:inherit;border:none}
+  .save{padding:15px;border-radius:100px;background:var(--orange);color:#fff;font-weight:800;font-size:16px;transition:.15s}
+  .save:hover{filter:brightness(1.08)} .save:disabled{opacity:.4;cursor:default}
+  .msg{font-size:13px;padding:11px 13px;border-radius:11px;display:none;white-space:pre-wrap}
+  .msg.ok{display:block;background:var(--lime);color:var(--black);font-weight:700}
+  .msg.err{display:block;background:var(--orange);color:#fff}
+  .recent{display:flex;flex-direction:column;gap:8px}
+  .recent h2{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);margin:8px 0 0}
+  .rec{background:var(--grayUp);border:1px solid var(--line);border-radius:11px;padding:10px 12px;font-size:13px;display:flex;justify-content:space-between;gap:10px}
+  .rec .d{color:var(--muted);white-space:nowrap}
+  .empty{color:var(--muted);font-size:13px}
+  /* настроечная панель */
+  .setup{background:#383838;border:1px dashed var(--orange);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:10px}
+  .setup h3{margin:0;font-size:13px;text-transform:uppercase;letter-spacing:1px;color:var(--orange)}
+  .setup .row{display:flex;flex-direction:column;gap:4px}
+  .setup small{color:var(--muted);font-size:11px}
+  .setup select{padding:8px 10px;font-size:13px}
+  .setupToggle{font-size:12px;color:var(--muted);cursor:pointer;text-decoration:underline;align-self:flex-start}
+  .grpTitle{font-size:11px;color:var(--lime);text-transform:uppercase;letter-spacing:1px;margin-top:6px}
+  .save2{padding:11px;border-radius:100px;background:var(--lime);color:var(--black);font-weight:800;font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <h1>Мой день</h1>
+    <div class="who" id="who">…</div>
+  </div>
+
+  <!-- НАСТРОЙКА (видит владелец при установке). Сворачивается. -->
+  <div class="setup" id="setup" style="display:none">
+    <h3>⚙ Настройка полей (один раз)</h3>
+    <small>Назначь, какая таблица и колонка за что отвечает. Сохранится в виджете. Сотрудники этого не видят.</small>
+
+    <div class="grpTitle">Таблицы</div>
+    <div class="row"><label>Занятость (куда писать)</label><select id="m_tZan"></select></div>
+    <div class="row"><label>Состав проектов (задачи)</label><select id="m_tSos"></select></div>
+    <div class="row"><label>Список проектов</label><select id="m_tPrj"></select></div>
+    <div class="row"><label>Сотрудники</label><select id="m_tEmp"></select></div>
+
+    <div class="grpTitle">Колонки · Занятость</div>
+    <div class="row"><label>Ссылка на состав</label><select id="m_zSost"></select></div>
+    <div class="row"><label>Сотрудник</label><select id="m_zEmp"></select></div>
+    <div class="row"><label>Проект (необязательно)</label><select id="m_zPrj"></select></div>
+    <div class="row"><label>Дата</label><select id="m_zDate"></select></div>
+    <div class="row"><label>Факт дней</label><select id="m_zFakt"></select></div>
+    <div class="row"><label>Что делал (необязательно)</label><select id="m_zNote"></select></div>
+
+    <div class="grpTitle">Колонки · Состав проектов</div>
+    <div class="row"><label>Проект</label><select id="m_sPrj"></select></div>
+    <div class="row"><label>Этап</label><select id="m_sEtap"></select></div>
+    <div class="row"><label>Подэтап</label><select id="m_sSub"></select></div>
+    <div class="row"><label>Роль (список)</label><select id="m_sRole"></select></div>
+
+    <div class="grpTitle">Колонки · Сотрудники</div>
+    <div class="row"><label>E-mail</label><select id="m_eEmail"></select></div>
+    <div class="row"><label>Роль</label><select id="m_eRole"></select></div>
+    <div class="row"><label>Имя</label><select id="m_eName"></select></div>
+
+    <div class="grpTitle">Колонки · Проекты</div>
+    <div class="row"><label>Название</label><select id="m_pName"></select></div>
+
+    <button class="save2" id="saveMap">Сохранить настройку</button>
+    <div class="msg" id="setupMsg"></div>
+  </div>
+  <div class="setupToggle" id="setupToggle">⚙ показать/скрыть настройку полей</div>
+
+  <!-- ОСНОВНОЙ ЭКРАН -->
+  <div class="card" id="mainCard">
+    <div><label>Проект</label><select id="project"><option value="">—</option></select></div>
+    <div><label>Задача (по твоей роли)</label><select id="task" disabled><option value="">сначала выбери проект</option></select></div>
+    <div><label>Сколько времени</label>
+      <div class="days" id="days">
+        <div class="day" data-v="0.25">¼</div><div class="day" data-v="0.5">½</div>
+        <div class="day" data-v="0.75">¾</div><div class="day sel" data-v="1">1 день</div>
+      </div>
+    </div>
+    <div><label>Когда</label>
+      <div class="dates" id="dates">
+        <div class="dt sel" data-d="today">Сегодня</div><div class="dt" data-d="yesterday">Вчера</div>
+      </div>
+    </div>
+    <div><label>Что делал (необязательно)</label><input type="text" id="note" placeholder="кратко…" /></div>
+    <button class="save" id="save" disabled>Записать день →</button>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="recent">
+    <h2>Мои последние записи</h2>
+    <div id="recentList"><div class="empty">…</div></div>
+  </div>
+</div>
+
+<script>
+const $=(id)=>document.getElementById(id);
+const toRecords=(t)=>{const ids=t.id||[];return ids.map((id,i)=>{const r={id};for(const k in t){if(k!=="id")r[k]=t[k][i];}return r;});};
+const refId=(v)=>Array.isArray(v)?v[1]:v;
+const refListVals=(v)=>{if(Array.isArray(v)){return v[0]==='L'?v.slice(1):v.filter(x=>typeof x==='number');}return v!=null?[v]:[];};
+const norm=(s)=>(s||"").toString().toLowerCase().replace(/[\s_().,:#-]/g,"");
+
+// ── схема: список таблиц и их колонок (id + человеческий label) ───────────────
+let TABLES=[]; // [{tableId, cols:[{colId,label,type,ref}]}]
+async function buildSchema(){
+  const T=toRecords(await grist.docApi.fetchTable("_grist_Tables"));
+  const C=toRecords(await grist.docApi.fetchTable("_grist_Tables_column"));
+  const num2id={}; T.forEach(t=>num2id[t.id]=t.tableId);
+  const byTid={};
+  T.forEach(t=>{ byTid[t.tableId]={tableId:t.tableId, cols:[]}; });
+  C.forEach(c=>{
+    const tid=num2id[c.parentId]; if(!tid||!byTid[tid])return;
+    if(c.colId==="manualSort")return;
+    let ref=null;
+    if(typeof c.type==="string"&&c.type.startsWith("Ref:"))ref=c.type.slice(4);
+    if(typeof c.type==="string"&&c.type.startsWith("RefList:"))ref=c.type.slice(8);
+    byTid[tid].cols.push({colId:c.colId,label:c.label||c.colId,type:c.type,ref});
+  });
+  TABLES=Object.values(byTid);
+}
+
+// ── маппинг: сохраняется в опциях виджета ────────────────────────────────────
+let MAP={}; // {tZan,tSos,tPrj,tEmp, zSost,zEmp,zPrj,zDate,zFakt,zNote, sPrj,sEtap,sSub,sRole, eEmail,eRole,eName, pName}
+const MAP_KEYS=["tZan","tSos","tPrj","tEmp","zSost","zEmp","zPrj","zDate","zFakt","zNote","sPrj","sEtap","sSub","sRole","eEmail","eRole","eName","pName"];
+const fieldToTable={ // какое поле колонки из какой таблицы-маппинга берётся
+  zSost:"tZan",zEmp:"tZan",zPrj:"tZan",zDate:"tZan",zFakt:"tZan",zNote:"tZan",
+  sPrj:"tSos",sEtap:"tSos",sSub:"tSos",sRole:"tSos",
+  eEmail:"tEmp",eRole:"tEmp",eName:"tEmp", pName:"tPrj",
+};
+
+function fillTableSelect(sel, selected){
+  sel.innerHTML='<option value="">—</option>'+TABLES.map(t=>`<option value="${t.tableId}" ${t.tableId===selected?"selected":""}>${t.tableId}</option>`).join("");
+}
+function fillColSelect(sel, tableId, selected){
+  const t=TABLES.find(x=>x.tableId===tableId);
+  const cols=t?t.cols:[];
+  sel.innerHTML='<option value="">—</option>'+cols.map(c=>`<option value="${c.colId}" ${c.colId===selected?"selected":""}>${c.label} (${c.type})</option>`).join("");
+}
+function refreshSetupCols(){
+  // таблицы
+  fillColSelect($("m_zSost"),MAP.tZan,MAP.zSost); fillColSelect($("m_zEmp"),MAP.tZan,MAP.zEmp);
+  fillColSelect($("m_zPrj"),MAP.tZan,MAP.zPrj); fillColSelect($("m_zDate"),MAP.tZan,MAP.zDate);
+  fillColSelect($("m_zFakt"),MAP.tZan,MAP.zFakt); fillColSelect($("m_zNote"),MAP.tZan,MAP.zNote);
+  fillColSelect($("m_sPrj"),MAP.tSos,MAP.sPrj); fillColSelect($("m_sEtap"),MAP.tSos,MAP.sEtap);
+  fillColSelect($("m_sSub"),MAP.tSos,MAP.sSub); fillColSelect($("m_sRole"),MAP.tSos,MAP.sRole);
+  fillColSelect($("m_eEmail"),MAP.tEmp,MAP.eEmail); fillColSelect($("m_eRole"),MAP.tEmp,MAP.eRole);
+  fillColSelect($("m_eName"),MAP.tEmp,MAP.eName); fillColSelect($("m_pName"),MAP.tPrj,MAP.pName);
+}
+function bindSetup(){
+  fillTableSelect($("m_tZan"),MAP.tZan); fillTableSelect($("m_tSos"),MAP.tSos);
+  fillTableSelect($("m_tPrj"),MAP.tPrj); fillTableSelect($("m_tEmp"),MAP.tEmp);
+  refreshSetupCols();
+  const tb={m_tZan:"tZan",m_tSos:"tSos",m_tPrj:"tPrj",m_tEmp:"tEmp"};
+  for(const id in tb){ $(id).onchange=()=>{ MAP[tb[id]]=$(id).value; refreshSetupCols(); }; }
+  const cb={m_zSost:"zSost",m_zEmp:"zEmp",m_zPrj:"zPrj",m_zDate:"zDate",m_zFakt:"zFakt",m_zNote:"zNote",
+            m_sPrj:"sPrj",m_sEtap:"sEtap",m_sSub:"sSub",m_sRole:"sRole",
+            m_eEmail:"eEmail",m_eRole:"eRole",m_eName:"eName",m_pName:"pName"};
+  for(const id in cb){ $(id).onchange=()=>{ MAP[cb[id]]=$(id).value; }; }
+}
+async function saveMap(){
+  try{
+    await grist.setOption("fieldMap", JSON.stringify(MAP));
+    setupMsg("Настройка сохранена. Перезагрузка…","ok");
+    setTimeout(()=>location.reload(),700);
+  }catch(e){ setupMsg("Не удалось сохранить: "+e.message,"err"); }
+}
+function setupMsg(t,k){ const m=$("setupMsg"); m.className="msg "+k; m.textContent=t; }
+
+// ── получение email вошедшего через access token + REST ──────────────────────
+let MY_EMAIL=null;
+async function fetchMyEmail(){
+  try{
+    const tok=await grist.docApi.getAccessToken({readOnly:true});
+    if(!tok||!tok.baseUrl||!tok.token) return null;
+    // эндпоинт текущего пользователя сессии
+    const url=tok.baseUrl.replace(/\/api\/docs\/.*$/,"")+"/api/session/access/active?auth="+tok.token;
+    const r=await fetch(url);
+    if(r.ok){ const j=await r.json(); const em=j&&j.user&&j.user.email; if(em)return em.toLowerCase(); }
+  }catch(_){}
+  return null;
+}
+
+// ── данные и основной поток ──────────────────────────────────────────────────
+let DATA={projects:[],sostav:[],emp:[],zan:[]}, ME=null, MYROLE=null;
+let sel={days:1,date:"today"};
+const have=(k)=>MAP[k]&&MAP[k].length;
+
+function ready(){ // все обязательные поля назначены?
+  return have("tZan")&&have("tSos")&&have("tPrj")&&have("tEmp")&&
+         have("zSost")&&have("zEmp")&&have("zFakt")&&
+         have("sPrj")&&have("sRole")&&have("eEmail")&&have("eRole")&&have("pName");
+}
+
+async function load(){
+  await buildSchema();
+  // подгрузим сохранённый маппинг
+  try{ const raw=await grist.getOption("fieldMap"); if(raw) MAP=JSON.parse(raw); }catch(_){}
+  bindSetup();
+
+  if(!ready()){
+    $("setup").style.display="flex";
+    $("mainCard").style.display="none";
+    $("who").textContent="нужна настройка полей";
+    return;
+  }
+
+  // основной режим
+  MY_EMAIL=await fetchMyEmail();
+  try{
+    DATA.projects=toRecords(await grist.docApi.fetchTable(MAP.tPrj));
+    DATA.sostav  =toRecords(await grist.docApi.fetchTable(MAP.tSos));
+    DATA.emp     =toRecords(await grist.docApi.fetchTable(MAP.tEmp));
+    DATA.zan     =toRecords(await grist.docApi.fetchTable(MAP.tZan));
+  }catch(e){ return msg("Ошибка чтения таблиц: "+e.message,"err"); }
+
+  if(!MY_EMAIL){
+    $("who").textContent="email не определён";
+    msg("Не удалось определить, кто вошёл (email пуст). Возможно, твоя версия Grist не отдаёт пользователя виджету. Напиши мне — поправлю способ.","err");
+    return;
+  }
+  ME=DATA.emp.find(e=>String(e[MAP.eEmail]||"").toLowerCase()===MY_EMAIL)||null;
+  if(!ME){
+    $("who").innerHTML="вижу тебя как: <b>"+MY_EMAIL+"</b>";
+    msg("Этот email не найден в «Сотрудниках». Проверь, что в таблице сотрудников есть строка с email "+MY_EMAIL+".","err");
+    return;
+  }
+  MYROLE=refId(ME[MAP.eRole]);
+  const myName= have("eName")? ME[MAP.eName] : MY_EMAIL;
+  $("who").innerHTML="<b>"+(myName||MY_EMAIL)+"</b>";
+  clrMsg(); fillProjects(); renderRecent();
+}
+
+function projName(p){ return p[MAP.pName] || ("Проект #"+p.id); }
+function myProjectIds(){
+  const ids=new Set();
+  DATA.sostav.forEach(r=>{ if(refListVals(r[MAP.sRole]).includes(MYROLE)) ids.add(refId(r[MAP.sPrj])); });
+  return ids;
+}
+function fillProjects(){
+  const allow=myProjectIds();
+  const list=DATA.projects.filter(p=>allow.has(p.id));
+  $("project").innerHTML='<option value="">—</option>'+list.map(p=>`<option value="${p.id}">${projName(p)}</option>`).join("");
+}
+function taskLabel(r){
+  const e=have("sEtap")? refId(r[MAP.sEtap]) : null;
+  const s=have("sSub")?  refId(r[MAP.sSub])  : null;
+  // подписи этапов — просто #id, читаемость не критична; можно улучшить позже
+  const es=(e!=null?("этап#"+e):"")+(s!=null?(" · подэтап#"+s):"");
+  return es||("строка #"+r.id);
+}
+function fillTasks(){
+  const pid=Number($("project").value); const task=$("task");
+  if(!pid){ task.innerHTML='<option value="">сначала выбери проект</option>'; task.disabled=true; return check(); }
+  const rows=DATA.sostav.filter(r=> refId(r[MAP.sPrj])===pid && refListVals(r[MAP.sRole]).includes(MYROLE));
+  if(!rows.length){ task.innerHTML='<option value="">нет задач по твоей роли</option>'; task.disabled=true; return check(); }
+  task.disabled=false;
+  task.innerHTML='<option value="">—</option>'+rows.map(r=>`<option value="${r.id}">${taskLabel(r)}</option>`).join("");
+  check();
+}
+function todayISO(off){ const d=new Date(); d.setDate(d.getDate()-(off||0)); return d.toISOString().slice(0,10); }
+function fmtDate(v){ if(typeof v==="number"){return new Date(v*1000).toISOString().slice(0,10);} return String(v).slice(0,10); }
+function renderRecent(){
+  const box=$("recentList");
+  const mine=DATA.zan.filter(z=>refId(z[MAP.zEmp])===ME.id)
+    .sort((a,b)=>String(fmtDate(b[MAP.zDate])).localeCompare(String(fmtDate(a[MAP.zDate])))).slice(0,6);
+  if(!mine.length){ box.innerHTML='<div class="empty">пока нет записей</div>'; return; }
+  box.innerHTML=mine.map(z=>{
+    const f=z[MAP.zFakt]??""; const n=have("zNote")?(z[MAP.zNote]||""):"";
+    return `<div class="rec"><span>${n||"запись"} · ${f} дн.</span><span class="d">${fmtDate(z[MAP.zDate])}</span></div>`;
+  }).join("");
+}
+function check(){ $("save").disabled=!($("project").value&&$("task").value); }
+function msg(t,k){ const m=$("msg"); m.className="msg "+k; m.textContent=t; }
+function clrMsg(){ const m=$("msg"); m.className="msg"; m.textContent=""; }
+
+async function save(){
+  clrMsg();
+  const sostavId=Number($("task").value);
+  if(!ME||!sostavId)return;
+  $("save").disabled=true;
+  try{
+    const pid=Number($("project").value);
+    const dateStr= sel.date==="today"? todayISO(0): todayISO(1);
+    const f={};
+    f[MAP.zSost]=sostavId; f[MAP.zEmp]=ME.id; f[MAP.zFakt]=sel.days;
+    if(have("zPrj")) f[MAP.zPrj]=pid;
+    if(have("zDate")) f[MAP.zDate]=dateStr;
+    if(have("zNote")) f[MAP.zNote]=$("note").value||"";
+    await grist.docApi.applyUserActions([["AddRecord",MAP.tZan,null,f]]);
+    msg("Записано: "+sel.days+" дн. ("+(sel.date==="today"?"сегодня":"вчера")+").","ok");
+    $("note").value="";
+    DATA.zan=toRecords(await grist.docApi.fetchTable(MAP.tZan));
+    renderRecent();
+  }catch(e){ msg("Не удалось записать: "+e.message,"err"); }
+  finally{ $("save").disabled=false; check(); }
+}
+
+$("project").addEventListener("change",fillTasks);
+$("task").addEventListener("change",check);
+$("days").addEventListener("click",e=>{const d=e.target.closest(".day");if(!d)return;[...$("days").children].forEach(x=>x.classList.remove("sel"));d.classList.add("sel");sel.days=Number(d.dataset.v);});
+$("dates").addEventListener("click",e=>{const d=e.target.closest(".dt");if(!d)return;[...$("dates").children].forEach(x=>x.classList.remove("sel"));d.classList.add("sel");sel.date=d.dataset.d;});
+$("save").addEventListener("click",save);
+$("saveMap").addEventListener("click",saveMap);
+$("setupToggle").addEventListener("click",()=>{ const s=$("setup"); s.style.display = s.style.display==="none"?"flex":"none"; });
+
+grist.ready({requiredAccess:"full"});
+load();
+</script>
+</body>
+</html>
