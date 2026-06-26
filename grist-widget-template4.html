@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Создать состав проекта</title>
+<script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+<style>
+  :root{--gray:#424242;--grayUp:#4d4d4d;--grayHi:#595959;--black:#0A0A0A;
+    --orange:#FF4D00;--lime:#B8FF00;--cream:#F0EDE6;--line:#5e5e5e;--muted:#a8a39a;}
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--gray);color:var(--cream);
+    font-family:'Onest',system-ui,sans-serif;font-size:14px}
+  .wrap{padding:16px;display:flex;flex-direction:column;gap:14px}
+  h1{font-size:15px;margin:0;letter-spacing:.3px}
+  .sub{color:var(--muted);font-size:12px;margin-top:-8px}
+  label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--muted);font-weight:600;display:block;margin-bottom:6px}
+  select{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);
+    background:var(--grayUp);color:var(--cream);font-size:14px;font-family:inherit}
+  select:focus{outline:2px solid var(--orange)}
+  .preview{background:var(--grayUp);border:1px solid var(--line);border-radius:12px;
+    padding:10px 12px;font-size:12px;color:var(--muted);max-height:220px;overflow:auto}
+  .preview b{color:var(--cream)}
+  .prow{padding:3px 0;border-top:1px solid var(--line)}
+  .prow:first-child{border-top:none}
+  button{cursor:pointer;font-family:inherit;border:none}
+  .go{padding:13px;border-radius:100px;background:var(--orange);color:#fff;font-weight:700;font-size:14px;transition:filter .15s,opacity .15s}
+  .go:hover{filter:brightness(1.08)}
+  .go:disabled{opacity:.5;cursor:default}
+  .msg{font-size:12px;padding:10px 12px;border-radius:10px;display:none;white-space:pre-wrap}
+  .msg.ok{display:block;background:var(--lime);color:var(--black);font-weight:600}
+  .msg.err{display:block;background:var(--orange);color:#fff}
+  .hint{font-size:11px;color:var(--muted);line-height:1.5}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>Создать состав проекта</h1>
+    <div class="sub">Копирует шаблон выбранного типа в «Состав проектов (факт)»</div>
+  </div>
+  <div><label>Проект</label><select id="project"></select></div>
+  <div><label>Тип шаблона</label><select id="ttype"></select>
+    <div class="sub" id="autohint" style="margin-top:6px"></div></div>
+  <div><label>Что будет добавлено</label>
+    <div class="preview" id="preview">Выбери проект и тип…</div></div>
+  <button class="go" id="go" disabled>Создать состав &rarr;</button>
+  <div class="msg" id="msg"></div>
+  <div class="hint">Строки добавятся в «Состав проектов (факт)» с привязкой к проекту.
+    Дальше ГАП режет их под объект. Шаблон не меняется. Повторный запуск добавит ещё раз.</div>
+</div>
+
+<script>
+// Имена таблиц виджет находит сам по id. Здесь — только имена КОЛОНОК (с запасом вариантов).
+const NAMES = {
+  // Жёсткие id таблиц (узнаны через «Просмотр кода»). Приоритет над поиском по имени.
+  srcId:"Table5",   // Шаблон состава проекта
+  dstId:"Table7",   // Состав проектов (факт)
+  projId:"Table2",  // Список проектов
+  typesId:"Table4", // Шаблоны типов проектов (справочник)
+  typeName:["A","Тип_проекта","Тип проекта","Название"],
+  srcHuman:"Шаблон состава проекта",   // запасной поиск по имени
+  dstHuman:"Состав проектов",
+  projHuman:"Список проектов",
+  srcType:["A","Тип_шаблона","Тип шаблона","Тип"],
+  srcEtap:["B","Этап"], srcSub:["C","Подэтап"], srcRole:["D","Роль"],
+  srcDays:["E","План_дней","План, дней","Пландней","План"],
+  dstProj:["A","Проект","Наименование проекта"], dstEtap:["B","Этап"], dstSub:["C","Подэтап"], dstRole:["D","Роль"],
+  dstDays:["E","План_дней","План, дней","Пландней","План"],
+  projType:["A","Тип_проекта","Тип проекта","Тип"],
+  projName:["F","Название_проекта","Название проекта","Название","Name"],
+};
+
+let DATA={projects:[],src:[],dstSample:{}}, TID={}, typeColInSrc=null;
+const $=(id)=>document.getElementById(id);
+const projectSel=$("project"),typeSel=$("ttype"),preview=$("preview"),
+      goBtn=$("go"),msg=$("msg"),autohint=$("autohint");
+const setMsg=(t,k)=>{msg.className="msg "+k;msg.textContent=t;};
+const clrMsg=()=>{msg.className="msg";msg.textContent="";};
+const norm=(s)=>(s||"").toLowerCase().replace(/[\s_().,:]/g,"");
+
+async function resolveTableIds(){
+  const tables=await grist.docApi.fetchTable("_grist_Tables");
+  const ids=tables.tableId||[];
+  const find=(human)=>{const n=norm(human);
+    let hit=ids.find(id=>norm(id)===n); if(hit)return hit;
+    hit=ids.find(id=>norm(id).includes(n)||n.includes(norm(id))); return hit||null;};
+  const has=(id)=>ids.includes(id);
+  const src = (NAMES.srcId && has(NAMES.srcId)) ? NAMES.srcId : find(NAMES.srcHuman);
+  const dst = (NAMES.dstId && has(NAMES.dstId)) ? NAMES.dstId : find(NAMES.dstHuman);
+  const projects = (NAMES.projId && has(NAMES.projId)) ? NAMES.projId : find(NAMES.projHuman);
+  const types = (NAMES.typesId && has(NAMES.typesId)) ? NAMES.typesId : null;
+  return {src,dst,projects,types,allIds:ids};
+}
+const toRecords=(t)=>{const ids=t.id||[];
+  return ids.map((id,i)=>{const r={id};for(const k in t){if(k!=="id")r[k]=t[k][i];}return r;});};
+const pickCol=(rec,cands)=>{for(const c of cands){if(rec&&c in rec)return c;}return cands[0];};
+const refId=(v)=>Array.isArray(v)?v[1]:v;
+const refList=(v)=>{if(Array.isArray(v)){return v[0]==='L'?v.slice(1):v.filter(x=>typeof x==='number');}return v?[v]:[];};
+
+async function load(){
+  try{
+    TID=await resolveTableIds();
+    const miss=[];
+    if(!TID.src)miss.push("источник «"+NAMES.srcHuman+"»");
+    if(!TID.dst)miss.push("приёмник «"+NAMES.dstHuman+"»");
+    if(!TID.projects)miss.push("«"+NAMES.projHuman+"»");
+    if(miss.length){ setMsg("Не нашёл таблицы: "+miss.join(", ")+".\nДоступные id: "+TID.allIds.join(", ")+"\nВпиши верное имя в NAMES.","err"); return; }
+    const [proj,src,dst]=await Promise.all([
+      grist.docApi.fetchTable(TID.projects),
+      grist.docApi.fetchTable(TID.src),
+      grist.docApi.fetchTable(TID.dst),
+    ]);
+    DATA.projects=toRecords(proj); DATA.src=toRecords(src);
+    DATA.dstSample=toRecords(dst)[0]||{};
+    if(!DATA.src.length){ setMsg("Таблица «"+NAMES.srcHuman+"» пуста — нечего копировать.","err"); return; }
+    typeColInSrc=pickCol(DATA.src[0],NAMES.srcType);
+    fillProjects(); fillTypes(); refresh();
+  }catch(e){ setMsg("Ошибка чтения: "+e.message+"\nПроверь, что доступ виджета = Полный доступ к документу.","err"); }
+}
+function fillProjects(){
+  const nameCol=pickCol(DATA.projects[0]||{},NAMES.projName);
+  projectSel.innerHTML='<option value="">—</option>'+
+    DATA.projects.map(p=>`<option value="${p.id}">${p[nameCol]||("Проект #"+p.id)}</option>`).join("");
+}
+function uniqueTypes(){
+  const seen=new Map();
+  DATA.src.forEach(r=>{const t=refId(r[typeColInSrc]);if(t!=null&&!seen.has(t))seen.set(t,true);});
+  return [...seen.keys()];
+}
+function fillTypes(){
+  typeSel.innerHTML='<option value="">—</option>'+
+    uniqueTypes().map(t=>{
+      const label = (DATA.typeNameById && DATA.typeNameById[t]) ? DATA.typeNameById[t] : ("Тип #"+t);
+      return `<option value="${t}">${label}</option>`;
+    }).join("");
+}
+function autoPickTypeFromProject(){
+  const p=DATA.projects.find(x=>x.id===Number(projectSel.value));
+  if(!p){autohint.textContent="";return;}
+  const t=refId(p[pickCol(p,NAMES.projType)]);
+  if(t!=null){typeSel.value=String(t);autohint.textContent="Тип подставлен из проекта (можно поменять).";}
+  else autohint.textContent="У проекта не задан тип — выбери вручную.";
+}
+function rowsForType(){
+  const t=Number(typeSel.value);if(!t)return[];
+  return DATA.src.filter(r=>refId(r[typeColInSrc])===t);
+}
+const refLabel=(v)=>{const id=refId(v);return id!=null?("#"+id):"—";};
+function refresh(){
+  const rows=rowsForType();
+  if(!rows.length){preview.innerHTML="Выбери проект и тип…";goBtn.disabled=true;return;}
+  const eC=pickCol(rows[0],NAMES.srcEtap),sC=pickCol(rows[0],NAMES.srcSub),dC=pickCol(rows[0],NAMES.srcDays);
+  preview.innerHTML=`<b>${rows.length} строк:</b>`+rows.map(r=>{
+    const e=refLabel(r[eC]),s=refLabel(r[sC]),d=r[dC]!=null?` · ${r[dC]} дн.`:"";
+    return `<div class="prow">${e}${s!=="—"?(" — "+s):""}${d}</div>`;}).join("");
+  goBtn.disabled=!(projectSel.value&&rows.length);
+}
+async function create(){
+  clrMsg();
+  const pid=Number(projectSel.value),rows=rowsForType();
+  if(!pid||!rows.length)return;
+  goBtn.disabled=true;
+  try{
+    const eC=pickCol(rows[0],NAMES.srcEtap),sC=pickCol(rows[0],NAMES.srcSub),
+          rC=pickCol(rows[0],NAMES.srcRole),dC=pickCol(rows[0],NAMES.srcDays);
+    const dProj=pickCol(DATA.dstSample,NAMES.dstProj),dEtap=pickCol(DATA.dstSample,NAMES.dstEtap),
+          dSub=pickCol(DATA.dstSample,NAMES.dstSub),dRole=pickCol(DATA.dstSample,NAMES.dstRole),
+          dDays=pickCol(DATA.dstSample,NAMES.dstDays);
+    const cols={
+      [dProj]:rows.map(()=>pid),
+      [dEtap]:rows.map(r=>refId(r[eC])??null),
+      [dSub]: rows.map(r=>refId(r[sC])??null),
+      [dRole]:rows.map(r=>["L",...refList(r[rC])]),
+      [dDays]:rows.map(r=>r[dC]??null),
+    };
+    await grist.docApi.applyUserActions([["BulkAddRecord",TID.dst,rows.map(()=>null),cols]]);
+    setMsg(`Готово: добавлено ${rows.length} строк в «Состав проектов (факт)».`,"ok");
+  }catch(e){ setMsg("Ошибка записи: "+e.message+"\nПроверь имена колонок приёмника (Проект/Этап/Подэтап/Роль/План_дней) и Полный доступ.","err"); }
+  finally{ goBtn.disabled=false; }
+}
+projectSel.addEventListener("change",()=>{autoPickTypeFromProject();refresh();});
+typeSel.addEventListener("change",refresh);
+goBtn.addEventListener("click",create);
+grist.ready({requiredAccess:"full"});
+load();
+</script>
+</body>
+</html>
